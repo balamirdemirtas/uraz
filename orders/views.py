@@ -22,9 +22,9 @@ from django.db.models import Q
 
 # Bu verileri, admin panelinden eklenebilir yapacağız
 
-api_key = 'sandbox-etkBOaBAec7Zh6jLDL59Gng0xJV2o1tV'
-secret_key = 'sandbox-uC9ysXfBn2syo7ZMOW2ywhYoc9z9hTHh'
-base_url = 'sandbox-api.iyzipay.com'
+api_key = ''
+secret_key = ''
+base_url = ''
 
 
 options = {
