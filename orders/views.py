@@ -1,5 +1,5 @@
 from django.shortcuts import render, redirect
-from .models import OrderItem, Order
+from .models import OrderItem, Order, ReturnData,WebhookData,UserTokenData
 from .forms import OrderCreateForm
 from cart.cart import Cart
 from django.contrib.auth.models import User
@@ -9,6 +9,10 @@ from django.core.mail import send_mail
 from django.contrib.auth.decorators import login_required
 from shop.models import Category, Product
 
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_POST
+
+import time
 # iyzico modülü -> pip install iyzipay
 import iyzipay
 
@@ -20,7 +24,11 @@ import requests
 import json
 from django.db.models import Q
 
+
+
 # Bu verileri, admin panelinden eklenebilir yapacağız
+
+
 
 api_key = ''
 secret_key = ''
@@ -34,6 +42,7 @@ options = {
     }
 sozlukToken = list()
 
+sepetClock = list()
 
 
 
@@ -108,9 +117,32 @@ def take(request):
     return render(request,"orders/order/take.html",context)
 
 
-@login_required(login_url="user:login")
+#@login_required(login_url="user:login")
 def payment(request):
+    ts = time.time()
+    zaman1 = int(ts)
+    zaman = str(zaman1)
+    sepetClock.append(zaman)
+    print(sepetClock[-1])
     cart = Cart(request)
+    if request.method == 'POST':
+        form = OrderCreateForm(request.POST)
+        print(form,'***********','Form Burada')
+        if form.is_valid():
+            order = form.save(commit=False)
+            order.author=request.user
+            order.save()
+
+
+
+            for item in cart:
+                 newItem = OrderItem.objects.create(order=order,author=request.user,
+                                         product=item['product'],
+                                         price=item['price'],
+                                         quantity=item['quantity'],
+                                         )
+                 #newItem.product.stock = newItem.product.stock - item['quantity']
+                 newItem.save()
     context = dict()
     """
     total = int()
@@ -133,26 +165,26 @@ def payment(request):
 
 
     buyer={
-        'id': 'BY789',
-        'name': 'John',
-        'surname': 'Doe',
-        'gsmNumber': '+905350000000',
-        'email': 'email@email.com',
-        'identityNumber': '74300864791',
+        'id': str(i.order.id),
+        'name': str(i.order.first_name),
+        'surname': str(i.order.last_name),
+        'gsmNumber': str(i.order.phone),
+        'email': str(i.order.email),
+        'identityNumber': str(i.order.tc),
         'lastLoginDate': '2015-10-05 12:43:35',
         'registrationDate': '2013-04-21 15:12:09',
-        'registrationAddress': 'Nidakule Göztepe, Merdivenköy Mah. Bora Sok. No:1',
+        'registrationAddress': str(i.order.adress),
         'ip': '85.34.78.112',
-        'city': 'Istanbul',
+        'city': str(i.order.city),
         'country': 'Turkey',
         'zipCode': '34732'
         }
 
     address={
-        'contactName': 'Jane Doe',
-        'city': 'Istanbul',
+        'contactName': str(i.order.first_name),
+        'city': str(i.order.city),
         'country': 'Turkey',
-        'address': 'Nidakule Göztepe, Merdivenköy Mah. Bora Sok. No:1',
+        'address': str(i.order.adress),
         'zipCode': '34732'
         }
 
@@ -168,15 +200,17 @@ def payment(request):
 
         ]
 
-    request={
+
+    if request.LANGUAGE_CODE == 'en':
+        request={
         'locale': 'tr',
-        'conversationId': '123456789',
+        'conversationId': str(i.order.tc),
         'price': para,
         'paidPrice': para,
         'currency': 'TRY',
         'basketId': 'B67832',
         'paymentGroup': 'PRODUCT',
-        "callbackUrl": "http://localhost:8000/order/result/",
+        "callbackUrl": "https://www.zeyneburas.com/en/order/result/",
         "enabledInstallments": ['2', '3', '6', '9'],
         'buyer': buyer,
         'shippingAddress': address,
@@ -185,6 +219,23 @@ def payment(request):
         # 'debitCardAllowed': True
         }
 
+    else:
+        request={
+        'locale': 'tr',
+        'conversationId': str(i.order.tc),
+        'price': para,
+        'paidPrice': para,
+        'currency': 'TRY',
+        'basketId': 'B67832',
+        'paymentGroup': 'PRODUCT',
+        "callbackUrl": "https://www.zeyneburas.com/tr/order/result/",
+        "enabledInstallments": ['2', '3', '6', '9'],
+        'buyer': buyer,
+        'shippingAddress': address,
+        'billingAddress': address,
+        'basketItems': basket_items,
+        # 'debitCardAllowed': True
+        }
     checkout_form_initialize = iyzipay.CheckoutFormInitialize().create(request, options)
 
     #print(checkout_form_initialize.read().decode('utf-8'))
@@ -197,33 +248,45 @@ def payment(request):
     print("************************")
     print(json_content["token"])
     print("************************")
-    sozlukToken.append(json_content["token"])
+    UserTokenData.objects.create(userlast=str(i.order.tc), usertoken=json_content["token"])
+    json_content["token"]
     # BURADA TOKEN BİLGİSİNİ ORDERITEM 'a YAZIYORUM,
     # RESULT İÇERİSİNDE ÖDEME BAŞARILI OLURSA, PAID -> True OLACAK
-    idOrder = OrderItem.objects.filter(order_id=orderID[-1]).update(tokenCheck=str(sozlukToken[0]))
+    idOrder = OrderItem.objects.filter(order_id=orderID[-1]).update(tokenCheck=str(json_content["token"]))
 
-    return HttpResponse(json_content["checkoutFormContent"])
+    return HttpResponse(json_content["checkoutFormContent"] + '<div id="iyzipay-checkout-form" class="responsive"></div>')
 
 
 @require_http_methods(['POST'])
 @csrf_exempt
 def result(request):
-    myactive = request.user
-    cart = Cart(request)
+    a = OrderItem.objects.filter(Q(author_id=request.user.id) and Q(paid=False))
+    total = int()
+    orderID = list()
+    for i in a:
+        orderID.append(i.order)
+        print(i.price * i.quantity)
+        total += float(i.price * i.quantity)
+    print(orderID)
+    kim = UserTokenData.objects.filter(userlast=str(i.order.tc)).order_by('id')
+    son = kim.last()
+    print('SON DENEME',son.usertoken)
+    #myactive = request.user
+    #cart = Cart(request)
     context = dict()
     mesaj = request
     url = request.META.get('')
     request = {
         'locale': 'tr',
-        'conversationId': '123456789',
-        'token': sozlukToken[0],
+        'conversationId': str(i.order.tc),
+        'token': str(son.usertoken),
         }
     checkout_form_result = iyzipay.CheckoutForm().retrieve(request, options)
     print("************************")
     print(type(checkout_form_result))
     result = checkout_form_result.read().decode('utf-8')
     print("************************")
-    print(sozlukToken[0])   # Form oluşturulduğunda
+    #print(sozlukToken[0])   # Form oluşturulduğunda
     print("************************")
     print("************************")
     sonuc = json.loads(result, object_pairs_hook=list)
@@ -237,30 +300,19 @@ def result(request):
     print("************************")
     if sonuc[0][1] == 'success':
         context['success'] = 'Başarılı İŞLEMLER'
-        idOrder = OrderItem.objects.filter(tokenCheck=str(sozlukToken[0])).update(paid=True)
+        #idOrder = OrderItem.objects.filter(tokenCheck=str(sozlukToken[-1])).update(paid=True)
 
-        sendOrder = OrderItem.objects.filter(Q(paid=True) & Q(author=myactive)).last()
+        iyzicoData = ReturnData.objects.create(status=sonuc[0][1],systemtime=sonuc[2][1],conversation=sonuc[3][1],price=sonuc[4][1],
+                                               paidPrice=sonuc[5][1],
+                                               paymentid=sonuc[7][1],
+                                               binNumber=sonuc[13][1],
+                                               result_token=sonuc[20][1],
+                                               payment_token=str(son.usertoken))
+        iyzicoData.save()
 
-
-
-        print(sendOrder.product.description,"**")
-        info = 'Çok Teşekkür Ederim Bizimle Beraber Olman Bizim İçin Çok Önemli Derslerde Görüşmek Üzere...'
-        name = sendOrder.order.first_name
-        last = sendOrder.order.last_name
-        linkNow = sendOrder.product.description
-        email = sendOrder.order.email
-        subject = 'Ödemeniz Alınmıştır'
-        from_email = settings.EMAIL_HOST_USER
-        to_email = [from_email, email]
-        contact_message = "WWW.ZEYNEBURAS.COM\n %s\n\İsim: %s\nSoyisim: %s\nLinkler:\n %s" % (
-            info,
-            name,
-            last,
-            linkNow,
-            )
-        send_mail(subject, contact_message, from_email, to_email,fail_silently=True)
-        cart.clear()
-        messages.success(mesaj,'Teşekkürler,Zoom Derslerin Email Adresine İletildi. ')
+        #cart.clear()
+        time.sleep(5)
+        messages.success(mesaj,'Teşekkürler Ödeme işlemleriniz Kontrol Ediliyor ,15 Saniye içinde Linkler Email Adresine İletilecek.')
         return HttpResponseRedirect(reverse('orders:success'), context)
 
     elif sonuc[0][1] == 'failure':
@@ -272,9 +324,10 @@ def result(request):
 
 
 def success(request):
-    cart = Cart(request)
     context = dict()
+    cart = Cart(request)
     context['cart'] = cart
+    cart.clear()
     context['success'] = 'İşlem Başarılı'
     context['show'] = OrderItem.objects.filter(Q(author=request.user) & Q(paid=True)).order_by('-id')
     template = 'orders/order/ok.html'
@@ -284,6 +337,113 @@ def success(request):
 def fail(request):
     context = dict()
     context['fail'] = 'Ödeme Alınamıştır Lütfen Tekrar Deneyiniz.'
-
+    cart = Cart(request)
+    context['cart'] = cart
     template = 'orders/order/fail.html'
     return render(request, template, context)
+
+
+@require_POST
+@csrf_exempt
+def webhook(request):
+    jsn = request.body
+    my_json = jsn.decode('utf8').replace("'", '"')
+
+    # Load the JSON to a Python list & dump it back out as formatted JSON
+    data = json.loads(my_json)
+    print("data", data['iyziEventTime'])
+    print("data", data['iyziEventType'])
+    print("data", data['iyziReferenceCode'])
+    print("data", data['merchantId'])
+    print("data", data['paymentConversationId'])
+    print("data", data['status'])
+    print("data", data['token'])
+    iyzicowebhook = WebhookData.objects.create(paymentConversation=data['paymentConversationId'],merchant=data['merchantId'],
+                                               webhooktoken=data['token'],
+                                               status=data['status'],
+                                               iyziReferenceCode=data['iyziReferenceCode'],
+                                               iyziEventType=data['iyziEventType'],
+                                               iyziEventTime=data['iyziEventTime'])
+    iyzicowebhook.save()
+
+    if data['status'] == 'SUCCESS':
+        cart = Cart(request)
+        print(cart)
+
+        print("***111111-------",cart)
+        a = OrderItem.objects.filter(Q(author_id=request.user.id) and Q(paid=False))
+        orderID = list()
+        for i in a:
+            orderID.append(i.order)
+
+        kim = UserTokenData.objects.filter(userlast=str(i.order.tc)).order_by('id')
+        son = kim.last()
+        print("sonnnnn", son)
+        print('kim çalıştı', son.usertoken)
+
+        idOrder = OrderItem.objects.filter(tokenCheck=str(son.usertoken)).update(paid=True)
+        print("idOrder", idOrder)
+        sendOrder = OrderItem.objects.filter(Q(paid=True) & Q(tokenCheck=str(son.usertoken)))
+        mail = ''
+        emaill =''
+
+        for i in sendOrder:
+            #print(i.product.description)
+            mail += str(i.product.name) + '\n' + str(i.product.description) + '\n' + '\n'
+            emaill = i.order.email
+
+        info = 'Aldığım Nefesteyim , Verdiğim Nefesteyim , Çok Teşekkür ediyorum..'
+
+        email = emaill
+        subject = 'Ödemeniz Alınmıştır'
+
+        from_email = settings.EMAIL_HOST_USER
+        to_email = [from_email, email,'zeyneburasonline@gmail.com','djangomarmaris@gmail.com','zeyneburaswebsite@gmail.com']
+        contact_message = "WWW.ZEYNEBURAS.COM\nAlınan Ürün  : %s\n" % (
+            mail,
+            )
+        send_mail(subject, contact_message, from_email, to_email,fail_silently=True)
+
+
+
+        cart.clear()
+
+
+
+    elif data['status'] == 'FAILURE':
+
+        a = OrderItem.objects.filter(Q(author_id=request.user.id) and Q(paid=False))
+        print('aaaaa',a)
+        orderID = list()
+        for i in a:
+            orderID.append(i.order)
+
+        kim = UserTokenData.objects.filter(userlast=str(i.order.tc)).order_by('id')
+        son = kim.last()
+
+
+        sendOrder = OrderItem.objects.filter(Q(paid=False) & Q(tokenCheck=str(son.usertoken)))
+
+        emaill =''
+        for i in sendOrder:
+            #print(i.product.description)
+            emaill = i.order.email
+
+        info = 'Üzgünüm Ödemeniz Alınmadı , Sepetinizden Devam Edebilirisiniz.'
+
+        email = emaill
+        subject = 'Üzgünüm Ödemeniz Alınamadı'
+        from_email = settings.EMAIL_HOST_USER
+        to_email = [from_email, email]
+        contact_message = " WWW.ZEYNEBURAS.COM\nLinkler: %s" % (
+            info,
+            )
+        send_mail(subject, contact_message, from_email, to_email,fail_silently=True)
+
+
+
+
+
+
+
+    return HttpResponse(status=200)
